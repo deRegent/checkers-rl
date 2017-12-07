@@ -51,7 +51,7 @@ class DQNAgent:
         self.auto_save_time = auto_save_time
 
         # create replay memory using deque
-        self.memory = deque(maxlen=memory_size)
+        self.memory = deque(maxlen=self.memory_size)
 
         # create main model and target model
         self.model = self.build_model()
