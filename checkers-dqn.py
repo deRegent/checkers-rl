@@ -13,15 +13,9 @@ from checkers import CheckerBoard
 from datetime import datetime
 import time
 
-
-# DQN Agent for the Cartpole
-# it uses Neural Network to approximate q function
-# and replay memory & target q network
 class DQNAgent:
     def __init__(self, state_size, action_size, model_name, auto_save_time, load_model_path=None,
                  epsilon_decay_steps=1000, test_mode = False):
-        # if you want to see Cartpole learning, then change to True
-        self.render = False
 
         # get size of state and action
         self.state_size = state_size
@@ -36,10 +30,12 @@ class DQNAgent:
             self.epsilon_min = 0
         else:
             self.epsilon = 1.0
-            self.epsilon_min = 0.05
+            self.epsilon_min = 0.02
 
-        self.batch_size = 128
-        self.train_start = 1000
+        self.memory_size = 100*100 # roughly 100-200 games of checkers
+
+        self.batch_size = 2048
+        self.train_start = 4096
 
         self.epsilon_decay_steps = epsilon_decay_steps
         self.epsilon_decay = (self.epsilon - self.epsilon_min) / self.epsilon_decay_steps
@@ -50,7 +46,7 @@ class DQNAgent:
         self.auto_save_time = auto_save_time
 
         # create replay memory using deque
-        self.memory = deque(maxlen=10000)
+        self.memory = deque(maxlen=memory_size)
 
         # create main model and target model
         self.model = self.build_model()
@@ -215,6 +211,8 @@ class CheckersEnvironmentWrapper:
         self.game_turns = 0
         self.score = 0
 
+        self.enable_capturing_reward = False
+
         for idx, move in enumerate(self.board.get_all_moves()):
             self.actions[idx] = move
 
@@ -249,11 +247,18 @@ class CheckersEnvironmentWrapper:
         return possible_idx_actions
 
     def step(self, action_idx):
+        assert self.board.get_current_player() == self.board.BLACK_PLAYER, "Training player should be black!"
+
         self.last_action_idx = action_idx
 
         action = self.actions[action_idx]
 
         # print("take action ", action_idx, " : ", action)
+
+        white_pieces_before = self.board.get_white_num() + self.board.get_white_kings_num()
+        white_kings_pieces_before = self.board.get_white_kings_num()
+        black_pieces_before = self.board.get_black_num() + self.board.get_black_kings_num()
+        black_kings_pieces_before = self.board.get_black_kings_num()
 
         self.board.make_move(action)
 
@@ -281,7 +286,13 @@ class CheckersEnvironmentWrapper:
                 print("white wins")
                 self.reward = self.defeat_reward
         else:
-            self.reward = 0
+            if self.enable_capturing_reward:
+                captured_whites = white_pieces_before - white_pieces
+                captured_black = black_pieces_before - black_pieces
+
+                self.reward = captured_whites - captured_black
+            else:
+                self.reward = 0
 
         self.score += self.reward
         self.game_turns += 1
@@ -315,31 +326,39 @@ class CheckersEnvironmentWrapper:
 
         return self.observation, self.reward, self.done
 
-def train_checkers():
 
+def run_session(experiment_name = "", model_name="checkers", test=False, model_path=None):
     env = CheckersEnvironmentWrapper()
 
     state_size = env.width
     action_size = env.action_space_size
 
-    model_name = "checkers_512_512_128"
-
     auto_save_time = 30 * 60
 
     decay_steps = 200 * 200
 
-    dqn_agent = DQNAgent(state_size, action_size, model_name, auto_save_time, epsilon_decay_steps=decay_steps)
+    dqn_agent = DQNAgent(state_size, action_size,
+                         model_name, auto_save_time,
+                         epsilon_decay_steps=decay_steps,
+                         load_model_path=model_path,
+                         test_mode=test)
 
     total_steps = 0
 
     episodes = 0
 
-    game_memory = deque(maxlen=200)
+    game_memory_n = 200.0
+
+    game_memory = deque(maxlen=game_memory_n)
+
+    episode_desc = "training"
+    if test:
+        episode_desc = "testing"
 
     while True:
         print("------------------------------------------\n"
-              "Start episode\n"
-              "------------------------------------------")
+              "Start " + episode_desc + " episode\n"
+                "------------------------------------------")
 
         done = False
 
@@ -368,14 +387,16 @@ def train_checkers():
                                     next_state, done,
                                     valid_actions, next_valid_actions)
 
-            # every time step do the training
-            dqn_agent.train_model()
+            if not test:
+                # every time step do the training
+                dqn_agent.train_model()
 
             episode_steps += 1
 
             if done:
-                # every episode update the target model to be same with model
-                dqn_agent.update_target_model()
+                if not test:
+                    # every episode update the target model to be same with model
+                    dqn_agent.update_target_model()
 
         total_steps += episode_steps
 
@@ -391,104 +412,17 @@ def train_checkers():
             else:
                 white_victories += 1
 
-        print("------------------------------------------\n"
-              "Fully connected. Nullification. Episode: %d. Steps: %d. "
-              "Total steps: %d. Total score: %d. Exploration rate: %f. "
-              "Black won: %d. White won: %d\n"
-              "------------------------------------------"
-              % (episodes, episode_steps, total_steps, env.score, dqn_agent.epsilon, black_victories, white_victories))
+        b_win_percents = (black_victories / game_memory_n) * 100
 
-        episodes += 1
-
-def test_checkers():
-
-    model_path = "models/checkers_512_512_128-2017-12-07-05-46-48.443508.h5"
-
-    env = CheckersEnvironmentWrapper()
-
-    state_size = env.width
-    action_size = env.action_space_size
-
-    model_name = "checkers_test"
-    auto_save_time = 60 * 60
-
-    decay_steps = 200 * 200
-
-    dqn_agent = DQNAgent(state_size, action_size, model_name, auto_save_time,
-                         epsilon_decay_steps=decay_steps,
-                         load_model_path = model_path,
-                         test_mode=True)
-
-    total_steps = 0
-
-    episodes = 0
-
-    max_episodes = 10000
-    black_victories = 0
-    white_victories = 0
-
-    while episodes < max_episodes:
-        print("------------------------------------------\n"
-              "Start test episode\n"
-              "------------------------------------------")
-
-        done = False
-
-        env.reset()
-
-        episode_steps = 0
-
-        while not done:
-
-            # get action for the current state and go one step in environment
-            state = env.observation
-            state = np.reshape(state, [1, state_size])
-
-            valid_actions = env.get_valid_idx_actions()
-
-            dqn_agent.set_valid_actions(valid_actions)
-
-            action = dqn_agent.get_action(state)
-
-            next_state, reward, done = env.step(action)
-            next_state = np.reshape(next_state, [1, state_size])
-
-            next_valid_actions = env.get_valid_idx_actions()
-
-            # save the sample <s, a, r, s'> to the replay memory
-            dqn_agent.append_sample(state, action, reward,
-                                    next_state, done,
-                                    valid_actions, next_valid_actions)
-
-            # every time step do the training
-            # dqn_agent.train_model()
-
-            episode_steps += 1
-
-            if done:
-                # every episode update the target model to be same with model
-                # dqn_agent.update_target_model()
-
-                if env.board.get_winner() == env.board.BLACK_PLAYER:
-                    # black wins
-                    black_victories += 1
-                else:
-                    white_victories += 1
-
-
-        total_steps += episode_steps
-
-        print("------------------------------------------\n"
-              "Fully connected. Nullification. Episode: %d. Steps: %d. "
-              "Total steps: %d. Total score: %d. Exploration rate: %f."
-              "Black won: %d. White won: %d\n"
-              "------------------------------------------"
-              % (episodes, episode_steps, total_steps, env.score, dqn_agent.epsilon, black_victories, white_victories))
+        print("------------------------------------------\n" +
+              experiment_name + ". Episode: %d. Steps: %d. "
+                                "Total steps: %d. Total score: %d. Exploration rate: %f. "
+                                "Black won: %f.\n"
+                                "------------------------------------------"
+              % (episodes, episode_steps, total_steps, env.score, dqn_agent.epsilon, b_win_percents))
 
         episodes += 1
 
 if __name__ == "__main__":
 
-    train_checkers()
-
-    # test_checkers()
+    run_session(experiment_name="FC, nullfication, large memory, no capturing reward", model_name="checkers_1024_1024_256")

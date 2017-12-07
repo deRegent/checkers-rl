@@ -14,12 +14,11 @@ import time
 
 from keras import backend as keras_backend
 
-# DQN Agent for the Cartpole
-# it uses Neural Network to approximate q function
-# and replay memory & target q network
+
 class DQNAgent:
-    def __init__(self, state_depth, state_width, state_height, action_size, model_name, auto_save_time, load_model_path=None,
-                 epsilon_decay_steps=1000, test_mode = False):
+    def __init__(self, state_depth, state_width, state_height, action_size, model_name, auto_save_time,
+                 load_model_path=None,
+                 epsilon_decay_steps=1000, test_mode=False):
 
         # get size of state and action
         self.state_depth = state_depth
@@ -36,10 +35,12 @@ class DQNAgent:
             self.epsilon_min = 0
         else:
             self.epsilon = 1.0
-            self.epsilon_min = 0.05
+            self.epsilon_min = 0.02
 
-        self.batch_size = 128
-        self.train_start = 1000
+        self.memory_size = 100 * 100  # roughly 100-200 games of checkers
+
+        self.batch_size = 2048
+        self.train_start = 4096
 
         self.epsilon_decay_steps = epsilon_decay_steps
         self.epsilon_decay = (self.epsilon - self.epsilon_min) / self.epsilon_decay_steps
@@ -50,7 +51,7 @@ class DQNAgent:
         self.auto_save_time = auto_save_time
 
         # create replay memory using deque
-        self.memory = deque(maxlen=2000)
+        self.memory = deque(maxlen=memory_size)
 
         # create main model and target model
         self.model = self.build_model()
@@ -71,7 +72,12 @@ class DQNAgent:
               "\n epsilon_min %f "
               "\n heat up steps %d "
               "\n epsilon_decay %f"
-              % (self.discount_factor, self.learning_rate, self.epsilon_min, self.train_start, self.epsilon_decay))
+              "\n state_depth %f"
+              "\n state_width %f"
+              "\n state_height %f"
+              % (self.discount_factor, self.learning_rate,
+                 self.epsilon_min, self.train_start, self.epsilon_decay,
+                 self.state_depth, self.state_width, self.state_height))
 
     # approximate Q function using Neural Network
     # state is input and Q Value of each action is output of network
@@ -80,15 +86,20 @@ class DQNAgent:
 
         keras_backend.set_image_dim_ordering('th')
 
-        model.add(Convolution2D(32, 3, 3, activation="relu", input_shape=(self.state_depth, self.state_width, self.state_height)))
-        model.add(Convolution2D(48, 3, 3, activation="relu"))
-        model.add(Convolution2D(64, 3, 3, activation="relu"))
+        model.add(Convolution2D(32, 2, 2, activation="relu",
+                                input_shape=(self.state_depth, self.state_width, self.state_height)))
+
+        model.add(Convolution2D(48, 2, 2, activation="relu"))
+
+        model.add(Convolution2D(64, 2, 2, activation="relu"))
 
         model.add(Flatten())
 
         model.add(Dense(1024, activation='relu',
                         init='he_uniform'))
-        model.add(Dropout(0.2))
+
+        model.add(Dense(1024, activation='relu',
+                        init='he_uniform'))
 
         model.add(Dense(self.action_size, activation='linear',
                         init='he_uniform'))
@@ -113,43 +124,35 @@ class DQNAgent:
 
     # get action from model using epsilon-greedy policy
     def get_action(self, state):
-        has_valid_actions = len(self.valid_actions) != 0
+        assert len(self.valid_actions) != 0, "valid actions should not be empty!"
 
-        if has_valid_actions:
-            if np.random.rand() <= self.epsilon:
-                return random.choice(self.valid_actions)
-            else:
-
-                state_cnn = [state] # 1, self.channels, self.state_width, self.state_height
-
-                q_value = self.model.predict(state)
-
-                predicted_actions_values = q_value[0]
-
-                predicted_action_value = None
-                predicted_action_idx = None
-
-                for idx, q_value in enumerate(predicted_actions_values):
-                    if idx in self.valid_actions and (
-                            predicted_action_value is None or q_value > predicted_action_value):
-                        predicted_action_value = q_value
-                        predicted_action_idx = idx
-
-                return predicted_action_idx
+        if np.random.rand() <= self.epsilon:
+            return random.choice(self.valid_actions)
         else:
-            print("don't have valid actions!")
-            if np.random.rand() <= self.epsilon:
-                return random.randrange(self.action_size)
-            else:
-                q_value = self.model.predict(state)
-                return np.argmax(q_value[0])
+            q_value = self.model.predict(state)
+
+            predicted_actions_values = q_value[0]
+
+            predicted_action_value = None
+            predicted_action_idx = None
+
+            for idx, q_value in enumerate(predicted_actions_values):
+                if idx in self.valid_actions and \
+                        (predicted_action_value is None or q_value > predicted_action_value):
+                    predicted_action_value = q_value
+                    predicted_action_idx = idx
+
+            return predicted_action_idx
 
     def set_valid_actions(self, valid_actions):
         self.valid_actions = valid_actions
 
-    # save sample <s,a,r,s'> to the replay memory
-    def append_sample(self, state, action, reward, next_state, done):
-        self.memory.append((state, action, reward, next_state, done))
+    # save sample <s,a,r,s',s_rules,s'_rules> to the replay memory
+    def append_sample(self, state, action, reward, next_state, done, valid_actions, next_valid_actions):
+        self.memory.append((state, action, reward,
+                            next_state, done,
+                            valid_actions, next_valid_actions))
+
         if self.epsilon > self.epsilon_min:
             self.epsilon -= self.epsilon_decay
 
@@ -163,6 +166,7 @@ class DQNAgent:
         update_input = np.zeros((batch_size, self.state_depth, self.state_width, self.state_height))
         update_target = np.zeros((batch_size, self.state_depth, self.state_width, self.state_height))
         action, reward, done = [], [], []
+        valid_actions, next_valid_actions = [], []
 
         for i in range(self.batch_size):
             update_input[i] = mini_batch[i][0]
@@ -170,17 +174,37 @@ class DQNAgent:
             reward.append(mini_batch[i][2])
             update_target[i] = mini_batch[i][3]
             done.append(mini_batch[i][4])
+            valid_actions.append(mini_batch[i][5])
+            next_valid_actions.append(mini_batch[i][6])
 
         target = self.model.predict(update_input)
         target_val = self.target_model.predict(update_target)
 
         for i in range(self.batch_size):
+            predicted_action_value = None
+
+            # apply game rules
+            predicted_actions_values = target_val[i]
+            state_next_valid_actions = next_valid_actions[i]
+            state_valid_actions = valid_actions[i]
+
+            assert action[i] in state_valid_actions, "Action should be in valid actions!"
+
+            for idx, q_value in enumerate(predicted_actions_values):
+                # get highest q prediction
+                if idx in state_next_valid_actions:
+                    if predicted_action_value is None or q_value > predicted_action_value:
+                        predicted_action_value = q_value
+
+                # nullify all invalid states in target
+                if not (idx in state_valid_actions):
+                    target[i][idx] = 0
+
             # Q Learning: get maximum Q value at s' from target model
             if done[i]:
                 target[i][action[i]] = reward[i]
             else:
-                target[i][action[i]] = reward[i] + self.discount_factor * (
-                    np.amax(target_val[i]))
+                target[i][action[i]] = reward[i] + self.discount_factor * predicted_action_value
 
         # and do the model fit!
         self.model.fit(update_input, target, batch_size=self.batch_size,
@@ -209,6 +233,8 @@ class CheckersEnvironmentWrapper:
         self.game_turns = 0
         self.score = 0
 
+        self.enable_capturing_reward = False
+
         for idx, move in enumerate(self.board.get_all_moves()):
             self.actions[idx] = move
 
@@ -217,10 +243,6 @@ class CheckersEnvironmentWrapper:
         self.action_space_size = len(self.actions)
 
         self.reset()
-
-    def is_white_piece(self, idx):
-        piece_vec = self.observation[idx * 4:idx * 4 + 4]
-        return piece_vec[1] == 1 or piece_vec[3] == 1
 
     def update_game_info(self):
         self.observation = self.board.get_state_cwh()
@@ -247,6 +269,8 @@ class CheckersEnvironmentWrapper:
         return possible_idx_actions
 
     def step(self, action_idx):
+        assert self.board.get_current_player() == self.board.BLACK_PLAYER, "Training player should be black!"
+
         self.last_action_idx = action_idx
 
         action = self.actions[action_idx]
@@ -284,10 +308,13 @@ class CheckersEnvironmentWrapper:
                 print("white wins")
                 self.reward = self.defeat_reward
         else:
-            captured_whites = white_pieces_before - white_pieces
-            captured_black = black_pieces_before - black_pieces
+            if self.enable_capturing_reward:
+                captured_whites = white_pieces_before - white_pieces
+                captured_black = black_pieces_before - black_pieces
 
-            self.reward = captured_whites - captured_black
+                self.reward = captured_whites - captured_black
+            else:
+                self.reward = 0
 
         self.score += self.reward
         self.game_turns += 1
@@ -321,29 +348,36 @@ class CheckersEnvironmentWrapper:
 
         return self.observation, self.reward, self.done
 
-def train_checkers():
 
+def run_session(experiment_name="", model_name="checkers", test=False, model_path=None):
     env = CheckersEnvironmentWrapper()
-
-    model_name = "checkers_cnn"
 
     auto_save_time = 30 * 60
 
     decay_steps = 200 * 200
 
     dqn_agent = DQNAgent(env.depth, env.width, env.height, env.action_space_size,
-                         model_name, auto_save_time, epsilon_decay_steps=decay_steps)
+                         model_name, auto_save_time,
+                         epsilon_decay_steps=decay_steps,
+                         load_model_path=model_path,
+                         test_mode=test)
 
     total_steps = 0
 
     episodes = 0
 
-    game_memory = deque(maxlen=1000)
+    game_memory_n = 200.0
+
+    game_memory = deque(maxlen=game_memory_n)
+
+    episode_desc = "training"
+    if test:
+        episode_desc = "testing"
 
     while True:
         print("------------------------------------------\n"
-              "Start episode\n"
-              "------------------------------------------")
+              "Start " + episode_desc + " episode\n"
+                "------------------------------------------")
 
         done = False
 
@@ -363,17 +397,23 @@ def train_checkers():
 
             next_state, reward, done = env.step(action)
 
-            # save the sample <s, a, r, s'> to the replay memory
-            dqn_agent.append_sample(state, action, reward, next_state, done)
+            next_valid_actions = env.get_valid_idx_actions()
 
-            # every time step do the training
-            dqn_agent.train_model()
+            # save the sample <s, a, r, s'> to the replay memory
+            dqn_agent.append_sample(state, action, reward,
+                                    next_state, done,
+                                    valid_actions, next_valid_actions)
+
+            if not test:
+                # every time step do the training
+                dqn_agent.train_model()
 
             episode_steps += 1
 
             if done:
-                # every episode update the target model to be same with model
-                dqn_agent.update_target_model()
+                if not test:
+                    # every episode update the target model to be same with model
+                    dqn_agent.update_target_model()
 
         total_steps += episode_steps
 
@@ -389,100 +429,18 @@ def train_checkers():
             else:
                 white_victories += 1
 
-        print("------------------------------------------\n"
-              "Episode was finished. Episode: %d. Steps: %d. "
-              "Total steps: %d. Total score: %d. Exploration rate: %f."
-              "Last 1000 games. Black won: %d. White won: %d\n"
-              "------------------------------------------"
-              % (episodes, episode_steps, total_steps, env.score, dqn_agent.epsilon, black_victories, white_victories))
+        b_win_percents = (black_victories/game_memory_n) * 100
+
+        print("------------------------------------------\n" +
+              experiment_name + ". Episode: %d. Steps: %d. "
+                                "Total steps: %d. Total score: %d. Exploration rate: %f. "
+                                "Black won: %f.\n"
+                                "------------------------------------------"
+              % (episodes, episode_steps, total_steps, env.score, dqn_agent.epsilon, b_win_percents))
 
         episodes += 1
 
-def test_checkers():
-
-    model_path = "models/checkers_512_512_128_drop-2017-12-04-04-44-31.692527.h5"
-
-    env = CheckersEnvironmentWrapper()
-
-    state_size = env.width
-    action_size = env.action_space_size
-
-    model_name = "checkers_train"
-    auto_save_time = 30 * 60
-
-    decay_steps = 200 * 200
-
-    dqn_agent = DQNAgent(state_size, action_size, model_name, auto_save_time,
-                         epsilon_decay_steps=decay_steps,
-                         load_model_path = model_path,
-                         test_mode=True)
-
-    total_steps = 0
-
-    episodes = 0
-
-    max_episodes = 10000
-    black_victories = 0
-    white_victories = 0
-
-    while episodes < max_episodes:
-        print("------------------------------------------\n"
-              "Start test episode\n"
-              "------------------------------------------")
-
-        done = False
-
-        env.reset()
-
-        episode_steps = 0
-
-        while not done:
-
-            # get action for the current state and go one step in environment
-            state = env.observation
-            state = np.reshape(state, [1, state_size])
-
-            valid_actions = env.get_valid_idx_actions()
-
-            dqn_agent.set_valid_actions(valid_actions)
-
-            action = dqn_agent.get_action(state)
-
-            next_state, reward, done = env.step(action)
-            next_state = np.reshape(next_state, [1, state_size])
-
-            # save the sample <s, a, r, s'> to the replay memory
-            dqn_agent.append_sample(state, action, reward, next_state, done)
-
-            # every time step do the training
-            # dqn_agent.train_model()
-
-            episode_steps += 1
-
-            if done:
-                # every episode update the target model to be same with model
-                # dqn_agent.update_target_model()
-
-                if env.board.get_winner() == env.board.BLACK_PLAYER:
-                    # black wins
-                    black_victories += 1
-                else:
-                    white_victories += 1
-
-
-        total_steps += episode_steps
-
-        print("------------------------------------------\n"
-              "Episode was finished. Episode: %d. Steps: %d. "
-              "Total steps: %d. Total score: %d. Exploration rate: %f."
-              "Black won: %d. White won: %d\n"
-              "------------------------------------------"
-              % (episodes, episode_steps, total_steps, env.score, dqn_agent.epsilon, black_victories, white_victories))
-
-        episodes += 1
 
 if __name__ == "__main__":
-
-    train_checkers()
-
-    # test_checkers()
+    run_session(experiment_name="Conv, nullfication, large memory, no capturing reward",
+                model_name="checkers_conv3_2x1024_no_dropout")
