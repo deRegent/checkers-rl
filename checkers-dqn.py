@@ -206,7 +206,7 @@ class CheckersEnvironmentWrapper:
         self.height = 1
 
         self.win_reward = 100
-        self.defeat_reward = 0
+        self.defeat_reward = -100
 
         self.game_turns = 0
         self.score = 0
