@@ -349,7 +349,7 @@ def run_session(experiment_name = "", model_name="checkers", test=False, model_p
 
     game_memory_n = 200.0
 
-    game_memory = deque(maxlen=game_memory_n)
+    game_memory = deque(maxlen=int(game_memory_n))
 
     episode_desc = "training"
     if test:
