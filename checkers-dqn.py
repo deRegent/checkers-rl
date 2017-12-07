@@ -34,7 +34,7 @@ class DQNAgent:
 
         self.memory_size = 100*100 # roughly 100-200 games of checkers
 
-        self.batch_size = 2048
+        self.batch_size = 256
         self.train_start = 4096
 
         self.epsilon_decay_steps = epsilon_decay_steps
@@ -329,6 +329,7 @@ class CheckersEnvironmentWrapper:
 
 def run_session(experiment_name = "", model_name="checkers", test=False, model_path=None):
     env = CheckersEnvironmentWrapper()
+    env.enable_capturing_reward = True
 
     state_size = env.width
     action_size = env.action_space_size
@@ -425,4 +426,4 @@ def run_session(experiment_name = "", model_name="checkers", test=False, model_p
 
 if __name__ == "__main__":
 
-    run_session(experiment_name="FC, nullfication, large memory, no capturing reward", model_name="checkers_1024_1024_256")
+    run_session(experiment_name="FC, nullfication, large memory, capturing reward", model_name="checkers_1024_1024_256")
