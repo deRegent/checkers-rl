@@ -129,6 +129,8 @@ class DQNAgent:
         if np.random.rand() <= self.epsilon:
             return random.choice(self.valid_actions)
         else:
+            state = np.array([state])  # num of examples, 1, self.channels, self.state_width, self.state_height
+
             q_value = self.model.predict(state)
 
             predicted_actions_values = q_value[0]
